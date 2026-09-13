@@ -1,9 +1,8 @@
 /* ============================================================
-   密语
+   密语 · 生产级密码工具
    ============================================================ */
 
-/* ---------- 全局状态 ---------- */
-const state = { crackAbort:false };
+const state = { crackAbort:false, currentKeyForModal:null };
 
 /* ---------- Toast ---------- */
 function toast(msg, type='info', duration=2500) {
@@ -12,10 +11,7 @@ function toast(msg, type='info', duration=2500) {
   el.className = 'toast ' + type;
   el.textContent = msg;
   c.appendChild(el);
-  setTimeout(() => {
-    el.classList.add('out');
-    setTimeout(() => el.remove(), 200);
-  }, duration);
+  setTimeout(() => { el.classList.add('out'); setTimeout(() => el.remove(), 200); }, duration);
 }
 
 /* ---------- 工具 ---------- */
@@ -37,7 +33,7 @@ function checkStrength(pwd) {
 }
 
 /* ============================================================
-   密钥派生
+   派生密钥
    ============================================================ */
 async function deriveKey(masterPwd, salt, usages=['encrypt','decrypt']) {
   const km = await crypto.subtle.importKey('raw', utf8(masterPwd), 'PBKDF2', false, ['deriveKey']);
@@ -49,9 +45,39 @@ async function deriveKey(masterPwd, salt, usages=['encrypt','decrypt']) {
     usages
   );
 }
+async function deriveAesCtrKey(masterPwd, salt) {
+  const km = await crypto.subtle.importKey('raw', utf8(masterPwd), 'PBKDF2', false, ['deriveKey']);
+  return crypto.subtle.deriveKey(
+    {name:'PBKDF2', salt, iterations:600000, hash:'SHA-256'},
+    km,
+    {name:'AES-CTR', length:256},
+    false,
+    ['encrypt','decrypt']
+  );
+}
+async function deriveAesCbcKey(masterPwd, salt) {
+  const km = await crypto.subtle.importKey('raw', utf8(masterPwd), 'PBKDF2', false, ['deriveKey']);
+  return crypto.subtle.deriveKey(
+    {name:'PBKDF2', salt, iterations:600000, hash:'SHA-256'},
+    km,
+    {name:'AES-CBC', length:256},
+    false,
+    ['encrypt','decrypt']
+  );
+}
+async function deriveHmacKey(masterPwd, salt) {
+  const km = await crypto.subtle.importKey('raw', utf8(masterPwd), 'PBKDF2', false, ['deriveKey']);
+  return crypto.subtle.deriveKey(
+    {name:'PBKDF2', salt:new Uint8Array([...salt,1]), iterations:600000, hash:'SHA-256'},
+    km,
+    {name:'HMAC', hash:'SHA-256', length:256},
+    false,
+    ['sign','verify']
+  );
+}
 
 /* ============================================================
-   AES-256-GCM
+   现代加密
    ============================================================ */
 async function aesGcmEncrypt(plain, key) {
   const iv = rand(12);
@@ -63,31 +89,188 @@ async function aesGcmDecrypt(ct, iv, key) {
   return fromUtf8(pt);
 }
 
-/* ============================================================
-   AES-256-CBC
-   ============================================================ */
-async function aesCbcEncrypt(plain, key) {
+async function aesCtrHmacEncrypt(plain, pwd, salt) {
+  const ctrKey = await deriveAesCtrKey(pwd, salt);
+  const macKey = await deriveHmacKey(pwd, salt);
   const iv = rand(16);
-  const ct = await crypto.subtle.encrypt({name:'AES-CBC',iv}, key, utf8(plain));
-  return {ct:new Uint8Array(ct), iv};
+  const ct = new Uint8Array(await crypto.subtle.encrypt({name:'AES-CTR', counter:iv, length:64}, ctrKey, utf8(plain)));
+  const mac = new Uint8Array(await crypto.subtle.sign('HMAC', macKey, ct));
+  return {ct, iv, mac};
 }
-async function aesCbcDecrypt(ct, iv, key) {
-  const pt = await crypto.subtle.decrypt({name:'AES-CBC',iv}, key, ct);
+async function aesCtrHmacDecrypt(ct, iv, mac, pwd, salt) {
+  const macKey = await deriveHmacKey(pwd, salt);
+  const valid = await crypto.subtle.verify('HMAC', macKey, mac, ct);
+  if (!valid) throw new Error('MAC 校验失败');
+  const ctrKey = await deriveAesCtrKey(pwd, salt);
+  const pt = await crypto.subtle.decrypt({name:'AES-CTR', counter:iv, length:64}, ctrKey, ct);
   return fromUtf8(pt);
 }
-async function deriveCbcKey(masterPwd, salt) {
-  const km = await crypto.subtle.importKey('raw', utf8(masterPwd), 'PBKDF2', false, ['deriveKey']);
-  return crypto.subtle.deriveKey(
-    {name:'PBKDF2', salt, iterations:600000, hash:'SHA-256'},
-    km,
-    {name:'AES-CBC', length:256},
-    false,
-    ['encrypt','decrypt']
-  );
+
+async function aesCbcHmacEncrypt(plain, pwd, salt) {
+  const cbcKey = await deriveAesCbcKey(pwd, salt);
+  const macKey = await deriveHmacKey(pwd, salt);
+  const iv = rand(16);
+  const ct = new Uint8Array(await crypto.subtle.encrypt({name:'AES-CBC', iv}, cbcKey, utf8(plain)));
+  const mac = new Uint8Array(await crypto.subtle.sign('HMAC', macKey, ct));
+  return {ct, iv, mac};
+}
+async function aesCbcHmacDecrypt(ct, iv, mac, pwd, salt) {
+  const macKey = await deriveHmacKey(pwd, salt);
+  const valid = await crypto.subtle.verify('HMAC', macKey, mac, ct);
+  if (!valid) throw new Error('MAC 校验失败');
+  const cbcKey = await deriveAesCbcKey(pwd, salt);
+  const pt = await crypto.subtle.decrypt({name:'AES-CBC', iv}, cbcKey, ct);
+  return fromUtf8(pt);
 }
 
 /* ============================================================
-   XOR / Base64 / Hex / Caesar / Reverse
+   古典密码
+   ============================================================ */
+function caesarShift(text, shift) {
+  shift = ((shift % 95) + 95) % 95;
+  return text.split('').map(c => {
+    const code = c.charCodeAt(0);
+    if (code >= 32 && code <= 126) return String.fromCharCode(((code-32+shift)%95)+32);
+    return c;
+  }).join('');
+}
+
+function vigenere(text, key, encode=true) {
+  const k = key.toUpperCase().replace(/[^A-Z]/g,'') || 'A';
+  let ki = 0;
+  return text.split('').map(c => {
+    const code = c.charCodeAt(0);
+    if (code >= 65 && code <= 90) {
+      const shift = k.charCodeAt(ki % k.length) - 65;
+      ki++;
+      return String.fromCharCode(((code-65 + (encode?shift:-shift) + 26) % 26) + 65);
+    }
+    if (code >= 97 && code <= 122) {
+      const shift = k.charCodeAt(ki % k.length) - 65;
+      ki++;
+      return String.fromCharCode(((code-97 + (encode?shift:-shift) + 26) % 26) + 97);
+    }
+    return c;
+  }).join('');
+}
+
+function atbash(text) {
+  return text.split('').map(c => {
+    const code = c.charCodeAt(0);
+    if (code >= 65 && code <= 90) return String.fromCharCode(90 - (code - 65));
+    if (code >= 97 && code <= 122) return String.fromCharCode(122 - (code - 97));
+    return c;
+  }).join('');
+}
+
+function rot13(text) { return caesarAlpha(text, 13); }
+function rot47(text) {
+  return text.split('').map(c => {
+    const code = c.charCodeAt(0);
+    if (code >= 33 && code <= 126) return String.fromCharCode(33 + ((code - 33 + 47) % 94));
+    return c;
+  }).join('');
+}
+function caesarAlpha(text, n) {
+  return text.split('').map(c => {
+    const code = c.charCodeAt(0);
+    if (code >= 65 && code <= 90) return String.fromCharCode(((code-65+n)%26)+65);
+    if (code >= 97 && code <= 122) return String.fromCharCode(((code-97+n)%26)+97);
+    return c;
+  }).join('');
+}
+
+function railFence(text, rails, encode=true) {
+  if (rails < 2) return text;
+  const len = text.length;
+  const pattern = [];
+  let r = 0, dir = 1;
+  for (let i=0;i<len;i++) {
+    pattern.push(r);
+    r += dir;
+    if (r === 0 || r === rails-1) dir = -dir;
+  }
+  if (encode) {
+    const rows = Array.from({length:rails}, () => []);
+    for (let i=0;i<len;i++) rows[pattern[i]].push(text[i]);
+    return rows.map(row => row.join('')).join('');
+  } else {
+    const counts = new Array(rails).fill(0);
+    for (const p of pattern) counts[p]++;
+    const rows = [];
+    let idx = 0;
+    for (let i=0;i<rails;i++) { rows.push(text.slice(idx, idx+counts[i]).split('')); idx += counts[i]; }
+    const result = [];
+    const pointers = new Array(rails).fill(0);
+    for (let i=0;i<len;i++) {
+      const row = pattern[i];
+      result.push(rows[row][pointers[row]++]);
+    }
+    return result.join('');
+  }
+}
+
+const MORSE_MAP = {
+  'A':'.-','B':'-...','C':'-.-.','D':'-..','E':'.','F':'..-.','G':'--.','H':'....','I':'..','J':'.---',
+  'K':'-.-','L':'.-..','M':'--','N':'-.','O':'---','P':'.--.','Q':'--.-','R':'.-.','S':'...','T':'-',
+  'U':'..-','V':'...-','W':'.--','X':'-..-','Y':'-.--','Z':'--..',
+  '0':'-----','1':'.----','2':'..---','3':'...--','4':'....-','5':'.....','6':'-....','7':'--...','8':'---..','9':'----.',
+  '.':'.-.-.-',',':'--..--','?':'..--..','/':'-..-.',' ':'/'
+};
+const MORSE_REV = Object.fromEntries(Object.entries(MORSE_MAP).map(([k,v]) => [v,k]));
+
+function morseEncode(text) {
+  return text.toUpperCase().split('').map(c => MORSE_MAP[c] || '').filter(Boolean).join(' ');
+}
+function morseDecode(text) {
+  return text.split(' ').map(code => MORSE_REV[code] || '').join('');
+}
+
+const BACON_MAP = {
+  'A':'AAAAA','B':'AAAAB','C':'AAABA','D':'AAABB','E':'AABAA','F':'AABAB','G':'AABBA','H':'AABBB',
+  'I':'ABAAA','J':'ABAAB','K':'ABABA','L':'ABABB','M':'ABBAA','N':'ABBAB','O':'ABBBA','P':'ABBBB',
+  'Q':'BAAAA','R':'BAAAB','S':'BAABA','T':'BAABB','U':'BABAA','V':'BABAB','W':'BABBA','X':'BABBB',
+  'Y':'BBAAA','Z':'BBAAB',' ':'BBBBB'
+};
+const BACON_REV = Object.fromEntries(Object.entries(BACON_MAP).map(([k,v]) => [v,k]));
+
+function baconEncode(text) {
+  return text.toUpperCase().split('').map(c => BACON_MAP[c] || '').filter(Boolean).join('');
+}
+function baconDecode(text) {
+  const clean = text.replace(/[^ABab]/g,'').toUpperCase();
+  let result = '';
+  for (let i=0;i<clean.length;i+=5) {
+    const chunk = clean.slice(i, i+5);
+    result += BACON_REV[chunk] || '';
+  }
+  return result;
+}
+
+/* ============================================================
+   编码格式
+   ============================================================ */
+function hexEncode(s) { return toHex(utf8(s)); }
+function hexDecode(h) { return fromUtf8(fromHex(h)); }
+function binaryEncode(s) { return Array.from(utf8(s)).map(b => b.toString(2).padStart(8,'0')).join(' '); }
+function binaryDecode(s) {
+  return fromUtf8(new Uint8Array(s.split(/\s+/).filter(Boolean).map(b => parseInt(b,2))));
+}
+function octalEncode(s) { return Array.from(utf8(s)).map(b => b.toString(8).padStart(3,'0')).join(' '); }
+function octalDecode(s) {
+  return fromUtf8(new Uint8Array(s.split(/\s+/).filter(Boolean).map(b => parseInt(b,8))));
+}
+function urlEncode(s) { return encodeURIComponent(s); }
+function urlDecode(s) { return decodeURIComponent(s); }
+function unicodeEncode(s) {
+  return s.split('').map(c => '\\u' + c.charCodeAt(0).toString(16).padStart(4,'0')).join('');
+}
+function unicodeDecode(s) {
+  return s.replace(/\\u([0-9a-fA-F]{4})/g, (_, h) => String.fromCharCode(parseInt(h,16)));
+}
+
+/* ============================================================
+   XOR / RC4
    ============================================================ */
 function xorCipher(text, key) {
   const t = utf8(text), k = utf8(key||'x');
@@ -95,14 +278,45 @@ function xorCipher(text, key) {
   for (let i=0;i<t.length;i++) out[i] = t[i]^k[i%k.length];
   return out;
 }
-function caesarShift(text, shift) {
-  return text.split('').map(c => {
-    const code = c.charCodeAt(0);
-    if (code >= 32 && code <= 126) return String.fromCharCode(((code-32+shift)%95+95)%95+32);
-    return c;
-  }).join('');
+function rc4(text, key) {
+  const S = Array.from({length:256}, (_,i) => i);
+  const k = utf8(key);
+  let j = 0;
+  for (let i=0;i<256;i++) {
+    j = (j + S[i] + k[i%k.length]) % 256;
+    [S[i], S[j]] = [S[j], S[i]];
+  }
+  const data = utf8(text);
+  const out = new Uint8Array(data.length);
+  let i = 0; j = 0;
+  for (let n=0;n<data.length;n++) {
+    i = (i+1) % 256;
+    j = (j + S[i]) % 256;
+    [S[i], S[j]] = [S[j], S[i]];
+    const K = S[(S[i]+S[j]) % 256];
+    out[n] = data[n] ^ K;
+  }
+  return out;
 }
-function reverseStr(s) { return s.split('').reverse().join(''); }
+function rc4Bytes(data, key) {
+  const S = Array.from({length:256}, (_,i) => i);
+  const k = utf8(key);
+  let j = 0;
+  for (let i=0;i<256;i++) {
+    j = (j + S[i] + k[i%k.length]) % 256;
+    [S[i], S[j]] = [S[j], S[i]];
+  }
+  const out = new Uint8Array(data.length);
+  let i = 0; j = 0;
+  for (let n=0;n<data.length;n++) {
+    i = (i+1) % 256;
+    j = (j + S[i]) % 256;
+    [S[i], S[j]] = [S[j], S[i]];
+    const K = S[(S[i]+S[j]) % 256];
+    out[n] = data[n] ^ K;
+  }
+  return out;
+}
 
 /* ============================================================
    Argon2id
@@ -117,20 +331,18 @@ async function argon2Hash(password, salt) {
 }
 
 /* ============================================================
-   Token 封装
+   Token
    ============================================================ */
 function makeToken(payload) {
-  const json = JSON.stringify(payload);
-  return 'MIYU1:' + b64e(utf8(json));
+  return 'MIYU1:' + b64e(utf8(JSON.stringify(payload)));
 }
 function parseToken(token) {
   if (!token.startsWith('MIYU1:')) throw new Error('Token 格式错误');
-  const json = fromUtf8(b64d(token.slice(6)));
-  return JSON.parse(json);
+  return JSON.parse(fromUtf8(b64d(token.slice(6))));
 }
 
 /* ============================================================
-   IndexedDB: 密码库 + 密钥库
+   IndexedDB
    ============================================================ */
 const DB_NAME = 'miyu-db', DB_VER = 2;
 const STORE_VAULT = 'vault', STORE_KEYS = 'keys';
@@ -213,34 +425,29 @@ document.addEventListener('DOMContentLoaded', () => {
   const masterKey = $('masterKey');
   masterKey.addEventListener('input', () => updateStrength(masterKey, $('strengthFill'), $('strengthLabel')));
 
-  /* ---------- 显示/隐藏主密钥 ---------- */
   $('toggleMasterKey').addEventListener('click', () => {
     const isPwd = masterKey.type === 'password';
     masterKey.type = isPwd ? 'text' : 'password';
     $('toggleMasterKey').querySelector('use').setAttribute('href', isPwd ? '#i-eye-off' : '#i-eye');
   });
 
-  /* ---------- 生成随机主密钥 ---------- */
   $('genMasterKey').addEventListener('click', () => {
     masterKey.value = toHex(rand(24));
     updateStrength(masterKey, $('strengthFill'), $('strengthLabel'));
     toast('已生成随机主密钥', 'success');
   });
 
-  /* ---------- 加密模式切换 ---------- */
   $('encryptMode').addEventListener('change', e => {
     const isSingle = e.target.value === 'single';
     $('singleModeField').style.display = isSingle ? 'block' : 'none';
     $('segmentedModeField').style.display = isSingle ? 'none' : 'block';
   });
 
-  /* ---------- 重置 ---------- */
   $('resetBtn').addEventListener('click', () => {
     masterKey.value = '';
     $('plainText').value = '生产环境测试消息';
     $('cipherOutput').textContent = '等待加密...';
-    $('decryptInput').value = '';
-    $('decryptOutput').textContent = '等待解密...';
+    $('algorithmInfo').textContent = '-';
     updateStrength(masterKey, $('strengthFill'), $('strengthLabel'));
     toast('已重置', 'info');
   });
@@ -252,25 +459,28 @@ document.addEventListener('DOMContentLoaded', () => {
     const plain = $('plainText').value;
     if (!plain) return toast('请输入明文', 'error');
     const mode = $('encryptMode').value;
-    const param = parseInt($('paramInput').value) || 3;
-
+    const param = $('paramInput').value;
     const btn = $('encryptBtn');
     btn.disabled = true;
 
     try {
-      let token;
+      let token, info;
       if (mode === 'single') {
-        token = await encryptSingle(plain, pwd, $('encryptMethod').value, param);
+        const result = await encryptSingle(plain, pwd, $('encryptMethod').value, param);
+        token = result.token; info = result.info;
       } else {
         token = await encryptSegmented(plain, pwd, $('segmentRules').value, param);
+        info = '分段组合加密';
       }
       $('cipherOutput').textContent = token;
       const meta = parseToken(token);
-      if (meta.m === 'aes-gcm' || meta.m === 'aes-cbc') {
-        $('securityLabel').textContent = '真实安全 (WebCrypto ' + meta.m.toUpperCase() + ')';
-        $('securityLabel').className = 'security-tag real';
-      } else if (meta.m === 'argon2') {
-        $('securityLabel').textContent = '真实安全 (Argon2id WASM)';
+      const securityMap = {
+        'aes-gcm':'真实安全 (AES-256-GCM)', 'aes-ctr-hmac':'真实安全 (AES-CTR + HMAC)',
+        'aes-cbc-hmac':'真实安全 (AES-CBC + HMAC)', 'chacha20':'真实安全 (ChaCha20-Poly1305)',
+        'argon2':'真实安全 (Argon2id 哈希)'
+      };
+      if (securityMap[meta.m]) {
+        $('securityLabel').textContent = securityMap[meta.m];
         $('securityLabel').className = 'security-tag real';
       } else if (meta.m === 'segmented') {
         $('securityLabel').textContent = '组合加密 (' + meta.segments.length + ' 段)';
@@ -279,6 +489,7 @@ document.addEventListener('DOMContentLoaded', () => {
         $('securityLabel').textContent = '教学用，不安全';
         $('securityLabel').className = 'security-tag weak';
       }
+      $('algorithmInfo').textContent = info;
       toast('加密成功', 'success');
     } catch (e) {
       $('cipherOutput').textContent = '加密失败: ' + e.message;
@@ -288,191 +499,269 @@ document.addEventListener('DOMContentLoaded', () => {
     }
   });
 
-  /* ---------- 单一加密 ---------- */
   async function encryptSingle(plain, pwd, method, param) {
+    // 现代
     if (method === 'aes-gcm') {
       const salt = rand(16);
       const key = await deriveKey(pwd, salt);
       const {ct, iv} = await aesGcmEncrypt(plain, key);
-      return makeToken({m:'aes-gcm', s:toHex(salt), i:toHex(iv), c:b64e(ct)});
+      return {token: makeToken({m:'aes-gcm', s:toHex(salt), i:toHex(iv), c:b64e(ct)}), info:'AES-256-GCM，PBKDF2 600k'};
     }
-    if (method === 'aes-cbc') {
+    if (method === 'aes-ctr-hmac') {
       const salt = rand(16);
-      const key = await deriveCbcKey(pwd, salt);
-      const {ct, iv} = await aesCbcEncrypt(plain, key);
-      return makeToken({m:'aes-cbc', s:toHex(salt), i:toHex(iv), c:b64e(ct)});
+      const {ct, iv, mac} = await aesCtrHmacEncrypt(plain, pwd, salt);
+      return {token: makeToken({m:'aes-ctr-hmac', s:toHex(salt), i:toHex(iv), c:b64e(ct), mac:toHex(mac)}), info:'AES-256-CTR + HMAC-SHA256'};
     }
+    if (method === 'aes-cbc-hmac') {
+      const salt = rand(16);
+      const {ct, iv, mac} = await aesCbcHmacEncrypt(plain, pwd, salt);
+      return {token: makeToken({m:'aes-cbc-hmac', s:toHex(salt), i:toHex(iv), c:b64e(ct), mac:toHex(mac)}), info:'AES-256-CBC + HMAC-SHA256'};
+    }
+    if (method === 'chacha20') {
+      // WebCrypto 对 ChaCha20-Poly1305 支持不统一，降级为 AES-GCM
+      toast('当前浏览器 ChaCha20 支持不完整，使用 AES-GCM 替代', 'info');
+      const salt = rand(16);
+      const key = await deriveKey(pwd, salt);
+      const {ct, iv} = await aesGcmEncrypt(plain, key);
+      return {token: makeToken({m:'aes-gcm', s:toHex(salt), i:toHex(iv), c:b64e(ct)}), info:'降级为 AES-256-GCM'};
+    }
+    // 古典
+    if (method === 'caesar') {
+      const n = parseInt(param) || 3;
+      return {token: makeToken({m:'caesar', p:n, c:caesarShift(plain, n)}), info:`凯撒位移 ${n}`};
+    }
+    if (method === 'vigenere') {
+      const key = param || 'KEY';
+      return {token: makeToken({m:'vigenere', k:key, c:vigenere(plain, key, true)}), info:`维吉尼亚，密钥 ${key}`};
+    }
+    if (method === 'atbash') {
+      return {token: makeToken({m:'atbash', c:atbash(plain)}), info:'Atbash 字母反转'};
+    }
+    if (method === 'rot13') {
+      return {token: makeToken({m:'rot13', c:rot13(plain)}), info:'ROT13'};
+    }
+    if (method === 'rot47') {
+      return {token: makeToken({m:'rot47', c:rot47(plain)}), info:'ROT47'};
+    }
+    if (method === 'railfence') {
+      const n = parseInt(param) || 3;
+      return {token: makeToken({m:'railfence', p:n, c:railFence(plain, n, true)}), info:`栅栏密码 ${n} 栏`};
+    }
+    if (method === 'morse') {
+      return {token: makeToken({m:'morse', c:morseEncode(plain)}), info:'摩斯电码'};
+    }
+    if (method === 'bacon') {
+      return {token: makeToken({m:'bacon', c:baconEncode(plain)}), info:'培根密码'};
+    }
+    // 编码
+    if (method === 'base64') return {token: makeToken({m:'base64', c:b64e(utf8(plain))}), info:'Base64 编码'};
+    if (method === 'hex') return {token: makeToken({m:'hex', c:hexEncode(plain)}), info:'Hex 编码'};
+    if (method === 'binary') return {token: makeToken({m:'binary', c:binaryEncode(plain)}), info:'二进制编码'};
+    if (method === 'octal') return {token: makeToken({m:'octal', c:octalEncode(plain)}), info:'八进制编码'};
+    if (method === 'url') return {token: makeToken({m:'url', c:urlEncode(plain)}), info:'URL 编码'};
+    if (method === 'unicode') return {token: makeToken({m:'unicode', c:unicodeEncode(plain)}), info:'Unicode 转义'};
+    if (method === 'reverse') return {token: makeToken({m:'reverse', c:plain.split('').reverse().join('')}), info:'字符串反转'};
+    // 其他
     if (method === 'xor') {
       const salt = rand(16);
-      const ct = xorCipher(plain, pwd + toHex(salt));
-      return makeToken({m:'xor', s:toHex(salt), c:b64e(ct)});
+      return {token: makeToken({m:'xor', s:toHex(salt), c:b64e(xorCipher(plain, pwd + toHex(salt)))}), info:'XOR 流密码（教学）'};
     }
-    if (method === 'base64') {
-      return makeToken({m:'base64', c:b64e(utf8(plain))});
-    }
-    if (method === 'hex') {
-      return makeToken({m:'hex', c:toHex(utf8(plain))});
-    }
-    if (method === 'caesar') {
-      return makeToken({m:'caesar', p:param, c:caesarShift(plain, param)});
-    }
-    if (method === 'reverse') {
-      return makeToken({m:'reverse', c:reverseStr(plain)});
+    if (method === 'rc4') {
+      const salt = rand(16);
+      return {token: makeToken({m:'rc4', s:toHex(salt), c:b64e(rc4(plain, pwd + toHex(salt)))}), info:'RC4（教学，不安全）'};
     }
     if (method === 'argon2') {
       const salt = rand(16);
       const hash = await argon2Hash(plain, salt);
-      return makeToken({m:'argon2', s:toHex(salt), h:hash});
+      return {token: makeToken({m:'argon2', s:toHex(salt), h:hash}), info:'Argon2id 哈希（不可逆）'};
     }
     throw new Error('未知方式');
   }
 
-  /* ---------- 分段组合加密 ---------- */
   async function encryptSegmented(plain, pwd, rulesText, defaultParam) {
     const rules = rulesText.split('\n').map(l => l.trim()).filter(Boolean).map(line => {
-      const m = line.match(/^(\d+)-(\d+):([\w-]+)(?::(\d+))?$/);
+      const m = line.match(/^(\d+)-(\d+):([\w-]+)(?::(.+))?$/);
       if (!m) throw new Error('规则格式错误: ' + line);
-      return {start:parseInt(m[1]), end:parseInt(m[2]), method:m[3], param: m[4] ? parseInt(m[4]) : defaultParam};
+      return {start:parseInt(m[1]), end:parseInt(m[2]), method:m[3], param: m[4] || defaultParam};
     });
     if (!rules.length) throw new Error('请填写至少一条规则');
-
     const bytes = utf8(plain);
     const total = bytes.length;
     const segments = [];
-    const output = [];
-
+    const covered = new Set();
     for (const rule of rules) {
       const s = Math.max(1, rule.start) - 1;
       const e = Math.min(total, rule.end);
       if (s >= e) continue;
-      const slice = bytes.slice(s, e);
-      const text = fromUtf8(slice);
+      const text = fromUtf8(bytes.slice(s, e));
       const enc = await encryptSegmentText(text, pwd, rule.method, rule.param);
-      segments.push({method:rule.method, param:rule.param, data:enc, range:[s+1, e]});
-      output.push(enc);
+      segments.push({m:rule.method, p:rule.param, d:enc, r:[s+1, e]});
+      for (let i=rule.start;i<=rule.end;i++) covered.add(i);
     }
-
-    // 处理未覆盖部分（原样保留，标为 raw）
-    const covered = new Set();
-    rules.forEach(r => { for (let i=r.start;i<=r.end;i++) covered.add(i); });
     let rawParts = '';
-    for (let i=1;i<=total;i++) {
-      if (!covered.has(i)) rawParts += String.fromCharCode(bytes[i-1]);
-    }
-
+    for (let i=1;i<=total;i++) if (!covered.has(i)) rawParts += String.fromCharCode(bytes[i-1]);
     return makeToken({
       m:'segmented',
-      segments: segments.map(s => ({m:s.method, p:s.param, d:s.data, r:s.range})),
+      segments,
       raw: b64e(utf8(rawParts))
     });
   }
 
   async function encryptSegmentText(text, pwd, method, param) {
-    if (method === 'aes-gcm') {
-      const salt = rand(16);
-      const key = await deriveKey(pwd, salt);
-      const {ct, iv} = await aesGcmEncrypt(text, key);
-      return {s:toHex(salt), i:toHex(iv), c:b64e(ct)};
-    }
-    if (method === 'aes-cbc') {
-      const salt = rand(16);
-      const key = await deriveCbcKey(pwd, salt);
-      const {ct, iv} = await aesCbcEncrypt(text, key);
-      return {s:toHex(salt), i:toHex(iv), c:b64e(ct)};
-    }
-    if (method === 'base64') return {c:b64e(utf8(text))};
-    if (method === 'hex') return {c:toHex(utf8(text))};
-    if (method === 'caesar') return {c:caesarShift(text, param)};
-    if (method === 'reverse') return {c:reverseStr(text)};
-    if (method === 'xor') {
-      const salt = rand(16);
-      return {s:toHex(salt), c:b64e(xorCipher(text, pwd + toHex(salt)))};
-    }
-    throw new Error('不支持的分段方式: ' + method);
+    const r = await encryptSingle(text, pwd, method, param);
+    return r.token.replace('MIYU1:','');
   }
 
-  /* ---------- 解密 ---------- */
+  /* ---------- 解密（独立区域） ---------- */
+  $('toggleDecryptKey').addEventListener('click', () => {
+    const el = $('decryptKey');
+    const isPwd = el.type === 'password';
+    el.type = isPwd ? 'text' : 'password';
+    $('toggleDecryptKey').querySelector('use').setAttribute('href', isPwd ? '#i-eye-off' : '#i-eye');
+  });
+
+  $('decryptMethod').addEventListener('change', e => {
+    $('decryptParamField').style.display = (e.target.value === 'auto') ? 'none' : 'block';
+  });
+
+  $('clearDecryptBtn').addEventListener('click', () => {
+    $('decryptToken').value = '';
+    $('decryptKey').value = '';
+    $('decryptOutput').textContent = '等待解密...';
+    $('tokenMeta').textContent = '-';
+    toast('已清空', 'info');
+  });
+
+  $('useCipherAsInput').addEventListener('click', () => {
+    const t = $('cipherOutput').textContent;
+    if (!t || t.startsWith('等待')) return toast('没有密文', 'error');
+    $('decryptToken').value = t;
+    // 自动切换到解密 tab
+    document.querySelectorAll('.tab').forEach(x => x.classList.remove('active'));
+    document.querySelectorAll('.tab-content').forEach(x => x.classList.remove('active'));
+    document.querySelector('[data-tab="decrypt"]').classList.add('active');
+    $('tab-decrypt').classList.add('active');
+    toast('已发送到解密区', 'info');
+  });
+
   $('decryptBtn').addEventListener('click', async () => {
-    const pwd = masterKey.value.trim();
-    const token = $('decryptInput').value.trim();
+    const token = $('decryptToken').value.trim();
+    const pwd = $('decryptKey').value.trim();
+    const methodChoice = $('decryptMethod').value;
+    const param = $('decryptParam').value;
     if (!token) return toast('请粘贴密文 Token', 'error');
-    if (!pwd) return toast('请输入主密钥', 'error');
 
     try {
-      const plain = await decryptToken(token, pwd);
+      // 尝试解析为 Token
+      let meta = null;
+      try { meta = parseToken(token); } catch (e) { /* 不是 Token，作为原始密文处理 */ }
+
+      if (meta) {
+        $('tokenMeta').textContent = JSON.stringify(meta, null, 2).slice(0, 500);
+      }
+
+      const effectiveMethod = methodChoice === 'auto' ? (meta ? meta.m : null) : methodChoice;
+      if (!effectiveMethod) return toast('无法确定解密方式，请手动选择', 'error');
+
+      let plain;
+      if (meta) {
+        plain = await decryptFromToken(meta, pwd, effectiveMethod, param);
+      } else {
+        plain = await decryptRaw(token, pwd, effectiveMethod, param);
+      }
       $('decryptOutput').textContent = plain;
       toast('解密成功', 'success');
     } catch (e) {
       $('decryptOutput').textContent = '解密失败: ' + e.message;
-      toast('解密失败', 'error');
+      toast('解密失败: ' + e.message, 'error');
     }
   });
 
-  async function decryptToken(token, pwd) {
-    const meta = parseToken(token);
-    if (meta.m === 'aes-gcm') {
+  async function decryptFromToken(meta, pwd, overrideMethod, param) {
+    const method = overrideMethod || meta.m;
+    if (method === 'aes-gcm') {
       const key = await deriveKey(pwd, fromHex(meta.s));
       return aesGcmDecrypt(b64d(meta.c), fromHex(meta.i), key);
     }
-    if (meta.m === 'aes-cbc') {
-      const key = await deriveCbcKey(pwd, fromHex(meta.s));
-      return aesCbcDecrypt(b64d(meta.c), fromHex(meta.i), key);
+    if (method === 'aes-ctr-hmac') {
+      const mac = fromHex(meta.mac);
+      const ct = b64d(meta.c);
+      const salt = fromHex(meta.s);
+      return aesCtrHmacDecrypt(ct, fromHex(meta.i), mac, pwd, salt);
     }
-    if (meta.m === 'xor') {
+    if (method === 'aes-cbc-hmac') {
+      const mac = fromHex(meta.mac);
+      const ct = b64d(meta.c);
+      const salt = fromHex(meta.s);
+      return aesCbcHmacDecrypt(ct, fromHex(meta.i), mac, pwd, salt);
+    }
+    if (method === 'caesar') return caesarShift(meta.c, -meta.p);
+    if (method === 'vigenere') return vigenere(meta.c, meta.k, false);
+    if (method === 'atbash') return atbash(meta.c);
+    if (method === 'rot13') return rot13(meta.c);
+    if (method === 'rot47') return rot47(meta.c);
+    if (method === 'railfence') return railFence(meta.c, meta.p, false);
+    if (method === 'morse') return morseDecode(meta.c);
+    if (method === 'bacon') return baconDecode(meta.c);
+    if (method === 'base64') return fromUtf8(b64d(meta.c));
+    if (method === 'hex') return hexDecode(meta.c);
+    if (method === 'binary') return binaryDecode(meta.c);
+    if (method === 'octal') return octalDecode(meta.c);
+    if (method === 'url') return urlDecode(meta.c);
+    if (method === 'unicode') return unicodeDecode(meta.c);
+    if (method === 'reverse') return meta.c.split('').reverse().join('');
+    if (method === 'xor') {
       const ct = b64d(meta.c);
       const k = utf8(pwd + meta.s);
       const out = new Uint8Array(ct.length);
       for (let i=0;i<ct.length;i++) out[i] = ct[i]^k[i%k.length];
       return fromUtf8(out);
     }
-    if (meta.m === 'base64') return fromUtf8(b64d(meta.c));
-    if (meta.m === 'hex') return fromUtf8(fromHex(meta.c));
-    if (meta.m === 'caesar') return caesarShift(meta.c, -meta.p);
-    if (meta.m === 'reverse') return reverseStr(meta.c);
-    if (meta.m === 'argon2') {
-      const h = await argon2Hash($('plainText').value, fromHex(meta.s));
-      return h === meta.h ? '(哈希匹配，但 Argon2id 不可逆)' : '(哈希不匹配)';
+    if (method === 'rc4') {
+      const ct = b64d(meta.c);
+      const out = rc4Bytes(ct, pwd + meta.s);
+      return fromUtf8(out);
     }
-    if (meta.m === 'segmented') {
+    if (method === 'argon2') {
+      const h = await argon2Hash($('plainText')?.value || '', fromHex(meta.s));
+      return h === meta.h ? '(哈希匹配)' : '(不匹配)';
+    }
+    if (method === 'segmented') {
       const parts = [];
       for (const seg of meta.segments) {
-        const dec = await decryptSegmentText(seg, pwd);
+        const innerMeta = parseToken('MIYU1:' + seg.d);
+        const dec = await decryptFromToken(innerMeta, pwd, innerMeta.m, seg.p);
         parts.push(dec);
       }
-      // 拼接 raw 部分（如果有）
       if (meta.raw) parts.push(fromUtf8(b64d(meta.raw)));
       return parts.join('');
     }
-    throw new Error('未知方式');
+    throw new Error('不支持的方式: ' + method);
   }
 
-  async function decryptSegmentText(seg, pwd) {
-    if (seg.m === 'aes-gcm') {
-      const key = await deriveKey(pwd, fromHex(seg.d.s));
-      return aesGcmDecrypt(b64d(seg.d.c), fromHex(seg.d.i), key);
-    }
-    if (seg.m === 'aes-cbc') {
-      const key = await deriveCbcKey(pwd, fromHex(seg.d.s));
-      return aesCbcDecrypt(b64d(seg.d.c), fromHex(seg.d.i), key);
-    }
-    if (seg.m === 'base64') return fromUtf8(b64d(seg.d.c));
-    if (seg.m === 'hex') return fromUtf8(fromHex(seg.d.c));
-    if (seg.m === 'caesar') return caesarShift(seg.d.c, -seg.p);
-    if (seg.m === 'reverse') return reverseStr(seg.d.c);
-    if (seg.m === 'xor') {
-      const ct = b64d(seg.d.c);
-      const k = utf8(pwd + seg.d.s);
-      const out = new Uint8Array(ct.length);
-      for (let i=0;i<ct.length;i++) out[i] = ct[i]^k[i%k.length];
-      return fromUtf8(out);
-    }
-    throw new Error('不支持的分段: ' + seg.m);
+  async function decryptRaw(text, pwd, method, param) {
+    if (method === 'caesar') return caesarShift(text, -(parseInt(param)||3));
+    if (method === 'vigenere') return vigenere(text, param || 'KEY', false);
+    if (method === 'atbash') return atbash(text);
+    if (method === 'rot13') return rot13(text);
+    if (method === 'rot47') return rot47(text);
+    if (method === 'railfence') return railFence(text, parseInt(param)||3, false);
+    if (method === 'morse') return morseDecode(text);
+    if (method === 'bacon') return baconDecode(text);
+    if (method === 'base64') return fromUtf8(b64d(text));
+    if (method === 'hex') return hexDecode(text);
+    if (method === 'binary') return binaryDecode(text);
+    if (method === 'octal') return octalDecode(text);
+    if (method === 'url') return urlDecode(text);
+    if (method === 'unicode') return unicodeDecode(text);
+    if (method === 'reverse') return text.split('').reverse().join('');
+    throw new Error('原始密文缺少元数据，请使用 Token');
   }
 
   /* ---------- 复制 ---------- */
-  const copyBtn = (btnId, getter) => {
+  const bindCopy = (btnId, targetId) => {
     $(btnId).addEventListener('click', () => {
-      const text = getter();
+      const text = $(targetId).textContent;
       if (!text || text.startsWith('等待')) return toast('没有内容可复制', 'error');
       navigator.clipboard.writeText(text);
       const use = $(btnId).querySelector('use');
@@ -481,14 +770,8 @@ document.addEventListener('DOMContentLoaded', () => {
       setTimeout(() => use.setAttribute('href', '#i-copy'), 1000);
     });
   };
-  copyBtn('copyCipher', () => $('cipherOutput').textContent);
-
-  $('useCipherAsInput').addEventListener('click', () => {
-    const t = $('cipherOutput').textContent;
-    if (!t || t.startsWith('等待')) return toast('没有密文', 'error');
-    $('decryptInput').value = t;
-    toast('已填入解密框', 'info');
-  });
+  bindCopy('copyCipher', 'cipherOutput');
+  bindCopy('copyPlain', 'decryptOutput');
 
   /* ============================================================
      密钥管理
@@ -501,7 +784,7 @@ document.addEventListener('DOMContentLoaded', () => {
   async function refreshSubkeyParent() {
     const keys = await dbAll(STORE_KEYS);
     const sel = $('subkeyParent');
-    sel.innerHTML = keys.map(k => `<option value="${k.id}">${k.name} (${k.type})</option>`).join('');
+    sel.innerHTML = keys.map(k => `<option value="${k.id}">${escapeHtml(k.name)} (${k.type})</option>`).join('');
     if (!keys.length) sel.innerHTML = '<option value="">请先生成主密钥</option>';
   }
 
@@ -529,7 +812,6 @@ document.addEventListener('DOMContentLoaded', () => {
         const parentId = $('subkeyParent').value;
         if (!parentId) return toast('请先选择主密钥', 'error');
         const info = $('subkeyInfo').value.trim() || 'encryption';
-        // 用 HKDF 从主密钥派生（此处以主密钥作为 IKM 演示）
         const parent = (await dbAll(STORE_KEYS)).find(k => k.id === parentId);
         if (!parent) return toast('主密钥不存在', 'error');
         const ikm = parent.privateKey ? b64d(parent.privateKey) : utf8(parent.name);
@@ -568,13 +850,14 @@ document.addEventListener('DOMContentLoaded', () => {
         <div class="vault-item-header">
           <span class="vault-item-title">${escapeHtml(k.name)}</span>
           <div class="vault-item-actions">
+            <button class="btn-icon" data-act="view" title="全屏查看"><svg class="icon-sm"><use href="#i-maximize"/></svg></button>
             <button class="btn-icon" data-act="export" title="导出 JSON"><svg class="icon-sm"><use href="#i-download"/></svg></button>
             <button class="btn-icon" data-act="delete" title="删除"><svg class="icon-sm"><use href="#i-trash"/></svg></button>
           </div>
         </div>
         <div class="vault-item-row">类型: ${k.type}</div>
-        ${k.publicKey ? `<div class="vault-item-row">公钥: ${k.publicKey.slice(0,48)}...</div>` : ''}
-        ${k.key ? `<div class="vault-item-row">密钥: ${k.key.slice(0,48)}...</div>` : ''}
+        ${k.publicKey ? `<div class="vault-item-row">公钥: ${k.publicKey.slice(0,40)}…</div>` : ''}
+        ${k.key ? `<div class="vault-item-row">密钥: ${k.key.slice(0,40)}…</div>` : ''}
         ${k.info ? `<div class="vault-item-row">用途: ${escapeHtml(k.info)}</div>` : ''}
         <div class="vault-item-row">创建: ${new Date(k.createdAt).toLocaleString()}</div>
       </div>
@@ -602,7 +885,58 @@ document.addEventListener('DOMContentLoaded', () => {
       a.href = url; a.download = k.name + '.json'; a.click();
       URL.revokeObjectURL(url);
       toast('已导出', 'success');
+    } else if (act === 'view') {
+      const all = await dbAll(STORE_KEYS);
+      const k = all.find(x => x.id === id);
+      if (!k) return;
+      openKeyModal(k);
     }
+  });
+
+  /* ---------- 全屏查看密钥 ---------- */
+  function openKeyModal(k) {
+    state.currentKeyForModal = k;
+    $('modalTitle').textContent = k.name + ' · ' + k.type;
+    const fields = [];
+    if (k.publicKey) fields.push(['公钥 (Hex)', k.publicKey]);
+    if (k.privateKey) fields.push(['私钥 (Base64)', k.privateKey]);
+    if (k.key) fields.push(['子密钥 (Hex)', k.key]);
+    if (k.salt) fields.push(['盐 (Hex)', k.salt]);
+    if (k.info) fields.push(['用途', k.info]);
+    if (k.parentId) fields.push(['父密钥 ID', k.parentId]);
+    fields.push(['创建时间', new Date(k.createdAt).toLocaleString()]);
+    $('modalBody').innerHTML = fields.map(([label, value]) => `
+      <div class="key-field">
+        <label>${escapeHtml(label)}</label>
+        <div class="key-value">${escapeHtml(value)}</div>
+      </div>
+    `).join('');
+    $('keyModal').classList.add('active');
+  }
+
+  $('modalClose').addEventListener('click', () => {
+    $('keyModal').classList.remove('active');
+  });
+  $('keyModal').addEventListener('click', e => {
+    if (e.target === $('keyModal')) $('keyModal').classList.remove('active');
+  });
+
+  $('modalCopy').addEventListener('click', () => {
+    const k = state.currentKeyForModal;
+    if (!k) return;
+    navigator.clipboard.writeText(JSON.stringify(k, null, 2));
+    toast('已复制完整密钥 JSON', 'success');
+  });
+
+  $('modalDownload').addEventListener('click', () => {
+    const k = state.currentKeyForModal;
+    if (!k) return;
+    const blob = new Blob([JSON.stringify(k, null, 2)], {type:'application/json'});
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url; a.download = k.name + '.json'; a.click();
+    URL.revokeObjectURL(url);
+    toast('已下载', 'success');
   });
 
   $('importKeyBtn').addEventListener('click', async () => {
@@ -640,7 +974,7 @@ document.addEventListener('DOMContentLoaded', () => {
 
   $('saveVaultBtn').addEventListener('click', async () => {
     const masterPwd = masterKey.value.trim();
-    if (!masterPwd) return toast('请先在「加解密」中输入主密钥', 'error');
+    if (!masterPwd) return toast('请先在「加密」中输入主密钥', 'error');
     const title = $('vaultTitle').value.trim();
     const username = $('vaultUsername').value.trim();
     const password = vaultPwd.value;
@@ -658,7 +992,6 @@ document.addEventListener('DOMContentLoaded', () => {
       const wrappedDek = new Uint8Array(await crypto.subtle.encrypt(
         {name:'AES-GCM', iv:dekIv}, kek, dek
       ));
-
       await dbPut(STORE_VAULT, {
         id, title, username, note,
         salt:toHex(salt), iv:toHex(iv), dekIv:toHex(dekIv),
@@ -718,7 +1051,7 @@ document.addEventListener('DOMContentLoaded', () => {
       toast('已删除', 'success');
     } else if (act === 'decrypt') {
       const masterPwd = masterKey.value.trim();
-      if (!masterPwd) return toast('请先在「加解密」中输入主密钥', 'error');
+      if (!masterPwd) return toast('请先在「加密」中输入主密钥', 'error');
       const all = await dbAll(STORE_VAULT);
       const entry = all.find(e => e.id === id);
       if (!entry) return;
@@ -760,7 +1093,6 @@ document.addEventListener('DOMContentLoaded', () => {
     'admin','admin123','root','toor','test','guest','user','pass','p@ssw0rd','Password1',
     'welcome','welcome1','hello','hello123','secret','love','god','money','ninja','azerty'
   ];
-
   function* dictGen() { for (const p of DICT) yield p; }
   function* numericGen() { for (let i=0;i<10000;i++) yield String(i).padStart(4,'0'); }
   function* lowercaseGen() {
@@ -776,14 +1108,8 @@ document.addEventListener('DOMContentLoaded', () => {
     const target = $('crackTarget').value.trim();
     if (!target) return toast('请输入 Token', 'error');
     let meta;
-    try {
-      meta = parseToken(target);
-    } catch (e) {
-      return toast('Token 格式错误', 'error');
-    }
-    if (meta.m !== 'aes-gcm') {
-      return toast('目前只支持 AES-GCM Token 破解演示', 'error');
-    }
+    try { meta = parseToken(target); } catch (e) { return toast('Token 格式错误', 'error'); }
+    if (meta.m !== 'aes-gcm') return toast('目前只支持 AES-GCM Token 破解演示', 'error');
 
     state.crackAbort = false;
     $('crackBtn').disabled = true;
@@ -792,9 +1118,7 @@ document.addEventListener('DOMContentLoaded', () => {
     $('crackResult').textContent = '-';
 
     const start = performance.now();
-    let count = 0;
-    let found = null;
-
+    let count = 0, found = null;
     const mode = $('crackMode').value;
     let gen;
     if (mode === 'dict') gen = dictGen();
@@ -812,7 +1136,6 @@ document.addEventListener('DOMContentLoaded', () => {
         found = {password:guess, plain:pt};
         break;
       } catch (e) { /* 继续 */ }
-
       if (count % 20 === 0) {
         const elapsed = performance.now() - start;
         $('crackCount').textContent = count.toLocaleString();
