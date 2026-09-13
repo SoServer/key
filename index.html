@@ -4,6 +4,7 @@
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width,initial-scale=1.0">
 <title>密语 · 密码工具</title>
+<link rel="icon" type="image/png" href="favicon.png" />
 <link rel="stylesheet" href="style.css">
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link href="https://fonts.googleapis.com/css2?family=Inter:opsz,wght@14..32,400;14..32,500;14..32,600&display=swap" rel="stylesheet">
@@ -12,7 +13,7 @@
 </head>
 <body>
 
-<!-- 内联 SVG 图标定义（无网络依赖，无 emoji） -->
+<!-- SVG 图标库 -->
 <svg style="display:none">
   <symbol id="i-lock" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="11" width="18" height="11" rx="2"/><path d="M7 11V7a5 5 0 0 1 10 0v4"/></symbol>
   <symbol id="i-shield" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"/></symbol>
@@ -28,131 +29,177 @@
   <symbol id="i-zap" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polygon points="13 2 3 14 12 14 11 22 21 10 12 10 13 2"/></symbol>
   <symbol id="i-database" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><ellipse cx="12" cy="5" rx="9" ry="3"/><path d="M21 12c0 1.66-4 3-9 3s-9-1.34-9-3"/><path d="M3 5v14c0 1.66 4 3 9 3s9-1.34 9-3V5"/></symbol>
   <symbol id="i-search" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="11" cy="11" r="8"/><line x1="21" y1="21" x2="16.65" y2="16.65"/></symbol>
+  <symbol id="i-key" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 2l-2 2m-7.61 7.61a5.5 5.5 0 1 1-7.778 7.778 5.5 5.5 0 0 1 7.777-7.777zm0 0L15.5 7.5m0 0l3 3L22 7l-3-3m-3.5 3.5L19 4"/></symbol>
+  <symbol id="i-layers" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polygon points="12 2 2 7 12 12 22 7 12 2"/><polyline points="2 17 12 22 22 17"/><polyline points="2 12 12 17 22 12"/></symbol>
+  <symbol id="i-upload" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="17 8 12 3 7 8"/><line x1="12" y1="3" x2="12" y2="15"/></symbol>
+  <symbol id="i-download" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/></symbol>
 </svg>
 
 <div class="app">
   <header class="header">
     <h1><svg class="icon"><use href="#i-lock"/></svg>密语</h1>
-    <p class="sub">WebCrypto 原生 · 密码管理 · 密文工具 · 暴力破解演示</p>
+    <p class="sub">WebCrypto · 组合加密 · 密钥管理 · 密码库</p>
   </header>
 
-  <!-- 顶部 Tab -->
   <nav class="tabs">
-    <button class="tab active" data-tab="encrypt">
-      <svg class="icon-sm"><use href="#i-shield"/></svg>加密工具
-    </button>
-    <button class="tab" data-tab="vault">
-      <svg class="icon-sm"><use href="#i-database"/></svg>密码库
-    </button>
-    <button class="tab" data-tab="crack">
-      <svg class="icon-sm"><use href="#i-zap"/></svg>暴力破解
-    </button>
+    <button class="tab active" data-tab="encrypt"><svg class="icon-sm"><use href="#i-shield"/></svg>加解密</button>
+    <button class="tab" data-tab="keys"><svg class="icon-sm"><use href="#i-key"/></svg>密钥管理</button>
+    <button class="tab" data-tab="vault"><svg class="icon-sm"><use href="#i-database"/></svg>密码库</button>
+    <button class="tab" data-tab="crack"><svg class="icon-sm"><use href="#i-zap"/></svg>破解演示</button>
   </nav>
 
-  <!-- Tab 1: 加密工具 -->
+  <!-- ============ Tab 1: 加解密 ============ -->
   <div class="tab-content active" id="tab-encrypt">
-    <div class="grid">
-      <!-- 左：配置 -->
+    <div class="grid-2">
+      <!-- 左：输入 -->
       <section class="panel">
-        <h2><svg class="icon-sm"><use href="#i-settings"/></svg>配置</h2>
+        <h2><svg class="icon-sm"><use href="#i-settings"/></svg>加密配置</h2>
 
         <div class="field">
-          <label>主密钥 / 密码</label>
+          <label>主密钥</label>
           <div class="input-row">
             <input type="password" id="masterKey" placeholder="输入主密钥" autocomplete="off">
-            <button id="toggleMasterKey" class="btn-icon" title="显示/隐藏">
-              <svg class="icon-sm"><use href="#i-eye"/></svg>
-            </button>
-            <button id="genMasterKey" class="btn-icon" title="生成随机密钥">
-              <svg class="icon-sm"><use href="#i-refresh"/></svg>
-            </button>
+            <button id="toggleMasterKey" class="btn-icon" title="显示/隐藏"><svg class="icon-sm"><use href="#i-eye"/></svg></button>
+            <button id="genMasterKey" class="btn-icon" title="生成随机密钥"><svg class="icon-sm"><use href="#i-refresh"/></svg></button>
           </div>
           <div class="strength-bar"><div id="strengthFill"></div></div>
           <div id="strengthLabel" class="hint">密码强度：未检测</div>
         </div>
 
         <div class="field">
-          <label>明文内容</label>
-          <textarea id="plainText" rows="3" placeholder="输入要加密的文本...">生产环境测试消息</textarea>
+          <label>明文</label>
+          <textarea id="plainText" rows="3" placeholder="要加密的文本...">生产环境测试消息</textarea>
         </div>
 
         <div class="field">
+          <label>加密模式</label>
+          <select id="encryptMode">
+            <option value="single">单一加密</option>
+            <option value="segmented">分段组合加密</option>
+          </select>
+        </div>
+
+        <div class="field" id="singleModeField">
           <label>加密方式</label>
           <select id="encryptMethod">
-            <option value="aes-gcm">AES-256-GCM (AEAD)</option>
-            <option value="aes-cbc-hmac">AES-256-CBC + HMAC-SHA256</option>
-            <option value="chacha20">ChaCha20-Poly1305 (如浏览器支持)</option>
-            <option value="ecdh-aes">ECDH P-256 + HKDF + AES-GCM</option>
-            <option value="ed25519">Ed25519 签名</option>
-            <option value="argon2">Argon2id 密码哈希</option>
+            <option value="aes-gcm">AES-256-GCM (AEAD, 推荐)</option>
+            <option value="aes-cbc">AES-256-CBC (带随机IV)</option>
             <option value="xor">XOR 流密码 (教学)</option>
             <option value="base64">Base64 编码</option>
             <option value="hex">Hex 编码</option>
             <option value="caesar">凯撒位移</option>
             <option value="reverse">字符串反转</option>
+            <option value="argon2">Argon2id 哈希</option>
           </select>
         </div>
 
-        <div class="field" id="paramField">
-          <label>参数 (位移量 / 迭代次数等)</label>
-          <input type="number" id="paramInput" value="3" min="1" max="20">
+        <div class="field" id="segmentedModeField" style="display:none">
+          <label>分段规则 (每行一条)</label>
+          <textarea id="segmentRules" rows="4" placeholder="1-5:aes-gcm&#10;6-10:base64&#10;11-15:caesar:3&#10;16-20:reverse"></textarea>
+          <div class="hint">格式：起始字节-结束字节:方式[:参数]，字节从1开始</div>
+        </div>
+
+        <div class="field">
+          <label>参数 (凯撒位移量等)</label>
+          <input type="number" id="paramInput" value="3" min="1" max="25">
         </div>
 
         <div class="actions">
-          <button id="encryptBtn" class="btn primary">
-            <svg class="icon-sm"><use href="#i-shield"/></svg>加密
-          </button>
+          <button id="encryptBtn" class="btn primary"><svg class="icon-sm"><use href="#i-shield"/></svg>加密</button>
           <button id="resetBtn" class="btn secondary">重置</button>
         </div>
       </section>
 
       <!-- 右：输出 -->
       <section class="panel">
-        <h2><svg class="icon-sm"><use href="#i-lock"/></svg>输出</h2>
+        <h2><svg class="icon-sm"><use href="#i-lock"/></svg>输出与解密</h2>
 
-        <div class="output-block">
-          <div class="output-header">
-            <span>密文</span>
-            <button id="copyCipher" class="btn-icon" title="复制">
-              <svg class="icon-sm"><use href="#i-copy"/></svg>
-            </button>
+        <div class="field">
+          <label>密文 Token (自包含，含盐/IV)</label>
+          <div class="output-header-inline">
+            <button id="copyCipher" class="btn-icon" title="复制"><svg class="icon-sm"><use href="#i-copy"/></svg></button>
+            <button id="useCipherAsInput" class="btn-small" title="填入下方解密框">填入解密框</button>
           </div>
           <div id="cipherOutput" class="output">等待加密...</div>
         </div>
 
-        <div class="output-block">
-          <div class="output-header">
-            <span>密钥信息 (盐 / IV / 版本)</span>
-            <button id="copyKeyInfo" class="btn-icon" title="复制">
-              <svg class="icon-sm"><use href="#i-copy"/></svg>
-            </button>
-          </div>
-          <div id="keyInfoOutput" class="output small">等待生成...</div>
-        </div>
-
-        <div class="output-block">
-          <div class="output-header">
-            <span>安全等级</span>
-          </div>
+        <div class="field">
+          <label>安全等级</label>
           <div id="securityLabel" class="security-tag real">真实安全 (WebCrypto 原生)</div>
         </div>
 
-        <div class="output-block">
-          <div class="output-header">
-            <span>解密验证</span>
-            <button id="decryptBtn" class="btn-icon" title="解密">
-              <svg class="icon-sm"><use href="#i-unlock"/></svg>
-            </button>
-          </div>
-          <div id="decryptOutput" class="output">点击解密验证可逆性</div>
+        <div class="divider"></div>
+
+        <div class="field">
+          <label>解密：粘贴 Token</label>
+          <textarea id="decryptInput" rows="3" placeholder="MIYU1:..."></textarea>
+        </div>
+
+        <div class="actions">
+          <button id="decryptBtn" class="btn primary"><svg class="icon-sm"><use href="#i-unlock"/></svg>解密</button>
+        </div>
+
+        <div class="field" style="margin-top:14px">
+          <label>解密结果</label>
+          <div id="decryptOutput" class="output">等待解密...</div>
         </div>
       </section>
     </div>
   </div>
 
-  <!-- Tab 2: 密码库 -->
+  <!-- ============ Tab 2: 密钥管理 ============ -->
+  <div class="tab-content" id="tab-keys">
+    <div class="grid-2">
+      <section class="panel">
+        <h2><svg class="icon-sm"><use href="#i-key"/></svg>生成密钥</h2>
+
+        <div class="field">
+          <label>密钥类型</label>
+          <select id="keyType">
+            <option value="ecdh">ECDH P-256 (密钥交换)</option>
+            <option value="ed25519">Ed25519 (数字签名)</option>
+            <option value="subkey">子密钥 (HKDF 派生)</option>
+          </select>
+        </div>
+
+        <div class="field">
+          <label>名称/用途</label>
+          <input type="text" id="keyName" placeholder="例如：主密钥-v1">
+        </div>
+
+        <div class="field" id="subkeyField" style="display:none">
+          <label>派生自哪个主密钥</label>
+          <select id="subkeyParent"></select>
+          <label style="margin-top:10px">派生子密钥用途</label>
+          <input type="text" id="subkeyInfo" value="encryption" placeholder="encryption / signing / mac">
+        </div>
+
+        <div class="actions">
+          <button id="genKeyBtn" class="btn primary"><svg class="icon-sm"><use href="#i-plus"/></svg>生成密钥对</button>
+        </div>
+
+        <div class="divider"></div>
+
+        <h2 style="margin-top:20px"><svg class="icon-sm"><use href="#i-layers"/></svg>密钥导入/导出</h2>
+        <div class="field">
+          <label>导入 JSON 密钥</label>
+          <textarea id="importKeyInput" rows="2" placeholder='{"type":"ecdh","privateKey":"..."}'></textarea>
+        </div>
+        <button id="importKeyBtn" class="btn secondary" style="width:100%">导入</button>
+      </section>
+
+      <section class="panel">
+        <h2><svg class="icon-sm"><use href="#i-database"/></svg>密钥列表</h2>
+        <div id="keyList" class="vault-list">
+          <div class="empty-state">暂无密钥</div>
+        </div>
+      </section>
+    </div>
+  </div>
+
+  <!-- ============ Tab 3: 密码库 ============ -->
   <div class="tab-content" id="tab-vault">
-    <div class="grid">
+    <div class="grid-2">
       <section class="panel">
         <h2><svg class="icon-sm"><use href="#i-plus"/></svg>添加条目</h2>
         <div class="field">
@@ -167,12 +214,8 @@
           <label>密码</label>
           <div class="input-row">
             <input type="password" id="vaultPassword" placeholder="密码">
-            <button id="toggleVaultPwd" class="btn-icon" title="显示/隐藏">
-              <svg class="icon-sm"><use href="#i-eye"/></svg>
-            </button>
-            <button id="genVaultPwd" class="btn-icon" title="生成随机密码">
-              <svg class="icon-sm"><use href="#i-refresh"/></svg>
-            </button>
+            <button id="toggleVaultPwd" class="btn-icon"><svg class="icon-sm"><use href="#i-eye"/></svg></button>
+            <button id="genVaultPwd" class="btn-icon"><svg class="icon-sm"><use href="#i-refresh"/></svg></button>
           </div>
           <div class="strength-bar"><div id="vaultStrengthFill"></div></div>
           <div id="vaultStrengthLabel" class="hint">密码强度：未检测</div>
@@ -182,9 +225,7 @@
           <input type="text" id="vaultNote" placeholder="可选">
         </div>
         <div class="actions">
-          <button id="saveVaultBtn" class="btn primary">
-            <svg class="icon-sm"><use href="#i-plus"/></svg>保存到密码库
-          </button>
+          <button id="saveVaultBtn" class="btn primary"><svg class="icon-sm"><use href="#i-plus"/></svg>保存</button>
           <button id="clearVaultBtn" class="btn secondary">清空全部</button>
         </div>
       </section>
@@ -195,53 +236,34 @@
           <input type="text" id="vaultSearch" placeholder="搜索标题 / 用户名...">
         </div>
         <div id="vaultList" class="vault-list">
-          <div class="empty-state">密码库为空，先添加一条</div>
+          <div class="empty-state">密码库为空</div>
         </div>
       </section>
     </div>
   </div>
 
-  <!-- Tab 3: 暴力破解 -->
+  <!-- ============ Tab 4: 破解演示 ============ -->
   <div class="tab-content" id="tab-crack">
-    <div class="grid">
+    <div class="grid-2">
       <section class="panel">
         <h2><svg class="icon-sm"><use href="#i-zap"/></svg>破解配置</h2>
         <div class="field">
-          <label>目标密文 (Base64 或 Hex)</label>
-          <textarea id="crackTarget" rows="2" placeholder="粘贴要破解的密文..."></textarea>
-        </div>
-        <div class="field">
-          <label>加密方式</label>
-          <select id="crackMethod">
-            <option value="aes-gcm">AES-256-GCM</option>
-            <option value="aes-cbc-hmac">AES-256-CBC + HMAC</option>
-            <option value="xor">XOR 流密码</option>
-            <option value="caesar">凯撒位移</option>
-          </select>
+          <label>目标密文 Token</label>
+          <textarea id="crackTarget" rows="2" placeholder="粘贴 MIYU1: 开头的 Token"></textarea>
         </div>
         <div class="field">
           <label>攻击模式</label>
           <select id="crackMode">
             <option value="dict">字典攻击 (常见弱密码)</option>
             <option value="numeric">数字穷举 (0000-9999)</option>
-            <option value="lowercase">小写字母穷举 (1-4 位)</option>
-            <option value="alnum">字母数字穷举 (1-3 位)</option>
+            <option value="lowercase">小写字母 (1-4位)</option>
           </select>
         </div>
-        <div class="field">
-          <label>盐 (若加密时使用)</label>
-          <input type="text" id="crackSalt" placeholder="Hex 格式的盐">
-        </div>
-        <div class="field">
-          <label>IV (若加密时使用)</label>
-          <input type="text" id="crackIv" placeholder="Hex 格式的 IV">
-        </div>
         <div class="actions">
-          <button id="crackBtn" class="btn primary">
-            <svg class="icon-sm"><use href="#i-zap"/></svg>开始破解
-          </button>
+          <button id="crackBtn" class="btn primary"><svg class="icon-sm"><use href="#i-zap"/></svg>开始</button>
           <button id="stopCrackBtn" class="btn secondary" disabled>停止</button>
         </div>
+        <div class="hint" style="margin-top:12px">仅支持 AES-GCM Token 破解演示。密码库中保存的条目不能用此工具破解。</div>
       </section>
 
       <section class="panel">
@@ -250,13 +272,19 @@
           <div class="output-header"><span>状态</span></div>
           <div id="crackStatus" class="output">等待开始...</div>
         </div>
-        <div class="output-block">
-          <div class="output-header"><span>已尝试</span></div>
-          <div id="crackCount" class="output">0</div>
-        </div>
-        <div class="output-block">
-          <div class="output-header"><span>耗时</span></div>
-          <div id="crackTime" class="output">0 ms</div>
+        <div class="grid-3">
+          <div class="output-block">
+            <div class="output-header"><span>已尝试</span></div>
+            <div id="crackCount" class="output">0</div>
+          </div>
+          <div class="output-block">
+            <div class="output-header"><span>耗时</span></div>
+            <div id="crackTime" class="output">0 ms</div>
+          </div>
+          <div class="output-block">
+            <div class="output-header"><span>速度</span></div>
+            <div id="crackSpeed" class="output">0 /s</div>
+          </div>
         </div>
         <div class="output-block">
           <div class="output-header"><span>结果</span></div>
@@ -270,6 +298,9 @@
     <p>WebCrypto 原生 · Argon2id WASM · zxcvbn 强度检测 · IndexedDB 密码库</p>
   </footer>
 </div>
+
+<!-- Toast 容器 -->
+<div id="toastContainer" class="toast-container"></div>
 
 <script src="script.js"></script>
 </body>
